@@ -96,7 +96,7 @@ python etl_connector.py --ips "8.8.8.8,1.1.1.1"
 - `.env` must **not** be committed to Git.
 - Follow the SSN assignment guidelines for commit messages:
   ```
-  Added OTX ETL Connector - Pradee - 3122225001092
+  Added OTX ETL Connector - Pradeep - 3122225001092
   ```
 
 ---
