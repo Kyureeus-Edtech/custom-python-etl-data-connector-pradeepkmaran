@@ -22,7 +22,7 @@ It connects to the **AlienVault OTX API** to fetch general information for given
 ## Project Structure
 
 ```
-/your-branch-name/
+/pradeep-assignment-1/
   ├── etl_connector.py      # Main ETL pipeline script
   ├── .env                  # Local environment variables (not committed)
   ├── requirements.txt      # Python dependencies
@@ -94,10 +94,6 @@ python etl_connector.py --ips "8.8.8.8,1.1.1.1"
 
 - Ensure MongoDB is running locally or update `MONGO_URI` in `.env`.
 - `.env` must **not** be committed to Git.
-- Follow the SSN assignment guidelines for commit messages:
-  ```
-  Added OTX ETL Connector - Pradeep - 3122225001092
-  ```
 
 ---
 
