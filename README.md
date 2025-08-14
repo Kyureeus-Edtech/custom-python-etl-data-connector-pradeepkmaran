@@ -22,7 +22,7 @@ It connects to the **AlienVault OTX API** to fetch general information for given
 ## Project Structure
 
 ```
-/your-branch-name/
+/pradeep-3122225001092-b/
   ├── etl_connector.py      # Main ETL pipeline script
   ├── .env                  # Local environment variables (not committed)
   ├── requirements.txt      # Python dependencies
@@ -37,16 +37,16 @@ It connects to the **AlienVault OTX API** to fetch general information for given
    ```bash
    git clone https://github.com/Kyureeus-Edtech/custom-python-etl-data-connector-pradeepkmaran
    cd custom-python-etl-data-connector-pradeepkmaran
-   git checkout -b pradeep-assignment-1
+   git checkout -b pradeep-3122225001092-b
    ```
 
 2. Create a `.env` file in the same folder as `etl_connector.py`:
    ```
-   OTX_BASE=https://otx_base_url.com
-   OTX_API_KEY=your_otx_api_key
-   MONGO_URI=mongodb://localhost:27017
-   MONGO_DB=etl_db
-   COLLECTION_NAME=otx_ip_general_raw
+   OTX_BASE=
+   OTX_API_KEY=
+   MONGO_URI=
+   MONGO_DB=
+   COLLECTION_NAME=
    ```
 
 3. Install dependencies:
