@@ -1,107 +1,146 @@
-# OTX IP General Data ETL Connector
+# NetworkCalc ETL Connector
 
-## Overview
-This project is a custom Python ETL (Extract → Transform → Load) data connector built as part of the **SSN College - Software Architecture Assignment** under the Kyureeus EdTech program.  
-It connects to the **AlienVault OTX API** to fetch general information for given IPv4 addresses, transforms the data for MongoDB compatibility, and loads it into a specified MongoDB collection.
-
----
-
-## API Details
-
-- **Provider:** [AlienVault OTX](https://otx.alienvault.com/)
-- **Endpoint:**  
-  ```
-  GET https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general
-  ```
-- **Authentication:** API key (stored in `.env` for security)
-- **Response Format:** JSON
-- **Rate Limits:** Subject to OTX free-tier restrictions.
+This project implements an ETL (Extract–Transform–Load) connector for the NetworkCalc public APIs.  
+It extracts network-related data, transforms it into a standard format, and loads it into MongoDB for storage and analysis.
 
 ---
 
 ## Project Structure
 
-```
-/pradeep-3122225001092-b/
-  ├── etl_connector.py      # Main ETL pipeline script
-  ├── .env                  # Local environment variables (not committed)
-  ├── requirements.txt      # Python dependencies
-  ├── README.md             # This documentation
-```
+| File | Description |
+|------|--------------|
+| etl_connector.py | Main ETL pipeline script |
+| requirements.txt | Python dependencies |
+| .env.example | Example environment configuration |
+| README.md | Documentation (this file) |
 
 ---
 
-## Installation
+## Setup Instructions
 
-1. Clone the repository and checkout to your branch:
-   ```bash
-   git clone https://github.com/Kyureeus-Edtech/custom-python-etl-data-connector-pradeepkmaran
-   cd custom-python-etl-data-connector-pradeepkmaran
-   git checkout -b pradeep-3122225001092-b
-   ```
+### 1. Create and Activate a Virtual Environment
 
-2. Create a `.env` file in the same folder as `etl_connector.py`:
-   ```
-   OTX_BASE=
-   OTX_API_KEY=
-   MONGO_URI=
-   MONGO_DB=
-   COLLECTION_NAME=
-   ```
+`python -m venv venv`
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Activate the virtual environment:
+
+- Windows (CMD):  
+  `venv\Scripts\activate`
+
+- PowerShell:  
+  `.\venv\Scripts\Activate.ps1`
+
+- macOS/Linux:  
+  `source venv/bin/activate`
+
+---
+
+### 2. Install Dependencies
+
+`pip install -r requirements.txt`
+
+---
+
+### 3. Configure Environment
+
+Copy the example environment file and modify as needed:
+
+`cp .env.example .env`
+
+Edit .env to configure database and API settings:
+
+MONGO_URI=mongodb://localhost:27017  
+MONGO_DB=networkcalc_etl  
+NETWORKCALC_BASE_URL=https://networkcalc.com/api
 
 ---
 
 ## Usage
 
-Run the ETL script with one or more IPs:
-```bash
-python etl_connector.py --ips "8.8.8.8,1.1.1.1"
-```
+You can run the connector in different modes to extract specific datasets.
+
+### IP Subnet Lookup
+
+`python etl_connector.py --mode ip --input "192.168.1.0/24"`
+
+### Binary Conversion
+
+Note: The /api/binary/{number} endpoint expects a binary string (for example, 11111111), not a decimal number.
+
+`python etl_connector.py --mode binary --input "11111111"`
+
+### TLS/SSL Certificate Lookup
+
+`python etl_connector.py --mode certificate --input "example.com"`
 
 ---
 
-## Example Output (Terminal)
+## Running All Jobs Together
 
-```
-2025-08-11 10:35:29,953 INFO Fetching OTX general data for IP: 8.8.8.8
-2025-08-11 10:35:30,637 INFO Inserted data for 8.8.8.8 into MongoDB.
-2025-08-11 10:35:30,638 INFO Fetching OTX general data for IP: 1.1.1.1
-2025-08-11 10:35:31,043 INFO Inserted data for 1.1.1.1 into MongoDB.
-```
+You can run all three connectors at once using the --mode all option.
 
----
+Windows CMD or macOS/Linux:  
+`python etl_connector.py --mode all --input '{"ip":"192.168.1.0/24","binary":"11111111","certificate":"example.com"}'`
 
-## Example Document in MongoDB
-
-```json
-{
-  "ip": "8.8.8.8",
-  "pulse_count": 15,
-  "is_malicious": false,
-  "raw": { ... },  // Full JSON response from OTX
-  "ingested_at": "2025-08-11T10:35:30.637Z"
-}
-```
+PowerShell (requires escaped quotes):  
+`python etl_connector.py --mode all --input '{\"ip\":\"192.168.1.0/24\",\"binary\":\"11111111\",\"certificate\":\"example.com\"}'`
 
 ---
 
-## Notes
+## MongoDB Output
 
-- Ensure MongoDB is running locally or update `MONGO_URI` in `.env`.
-- `.env` must **not** be committed to Git.
-- Follow the SSN assignment guidelines for commit messages:
-  ```
-  Added OTX ETL Connector - Pradeep - 3122225001092
-  ```
+Data is stored in the following MongoDB collections:
+
+| Collection | Description |
+|-------------|-------------|
+| networkcalc_ip_raw | Raw IP subnet lookup results |
+| networkcalc_binary_raw | Binary conversion results |
+| networkcalc_certificate_raw | SSL certificate lookup data |
+
+Each record includes:
+- source: API type (ip, binary, certificate)
+- input: The query value
+- fetched_at: UTC timestamp of retrieval
+- raw: Full API response JSON
 
 ---
 
-## Author
-- **Name:** Pradeep KM 
-- **Roll Number:** 3122225001092
-- **Course:** SSN CSE - Software Architecture Assignment  
+## Design Notes
+
+- Built with requests and automatic retry/backoff for network stability.  
+- Inserts raw API responses with metadata for traceability.  
+- Public endpoints — no authentication required.  
+- Easily extensible to support more NetworkCalc APIs or custom data transformations.
+
+---
+
+## Example Successful Run
+
+`python etl_connector.py --mode all --input '{\"ip\":\"192.168.1.0/24\",\"binary\":\"11111111\",\"certificate\":\"example.com\"}'`
+
+Expected output:
+
+INFO     GET https://networkcalc.com/api/ip/192.168.1.0/24  
+INFO     Inserted document id=... into networkcalc_etl.networkcalc_ip_raw  
+INFO     GET https://networkcalc.com/api/binary/11111111  
+INFO     Inserted document id=... into networkcalc_etl.networkcalc_binary_raw  
+INFO     GET https://networkcalc.com/api/security/certificate/example.com  
+INFO     Inserted document id=... into networkcalc_etl.networkcalc_certificate_raw  
+
+---
+
+## Commit and Submission Guidelines
+
+- Do not commit .env (it contains sensitive information).  
+- Add .env to your .gitignore file.  
+- Commit messages should include your name and roll number, for example:  
+  feat: add ETL connector implementation — John Doe (21CS123)
+
+---
+
+## Summary
+
+This ETL connector:
+- Fetches and stores data from NetworkCalc public APIs  
+- Handles retries, validation, and structured storage  
+- Demonstrates clean modular design for ETL systems

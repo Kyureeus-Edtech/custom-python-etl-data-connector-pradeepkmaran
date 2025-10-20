@@ -1,132 +1,193 @@
+#!/usr/bin/env python3
 """
-ETL Connector for AlienVault OTX IPv4 General endpoint.
-Extracts indicator data for one or more IPs, transforms it, and loads into MongoDB.
-""" 
+NetworkCalc ETL Connector
+Extract -> Transform -> Load for NetworkCalc public APIs:
+ - /api/ip/{subnet}
+ - /api/binary/{number}
+ - /api/security/certificate/{hostname}
+
+Usage:
+    export MONGO_URI="mongodb://localhost:27017"
+    python etl_connector.py --mode ip --input "192.168.1.0/24"
+    python etl_connector.py --mode binary --input "255"
+    python etl_connector.py --mode certificate --input "example.com"
+"""
+
 import os
-import argparse
+import sys
+import time
 import logging
+import argparse
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 import requests
+from requests.adapters import HTTPAdapter, Retry
+from pymongo import MongoClient
 from dotenv import load_dotenv
-from pymongo import MongoClient, errors
+
 load_dotenv()
 
-OTX_API_KEY = os.getenv("OTX_API_KEY")
-OTX_BASE = os.getenv("OTX_BASE")
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB = os.getenv("MONGO_DB")
-COLL_NAME = os.getenv("COLLECTION_NAME")
-LOG = logging.getLogger("etl_otx_ip")
-LOG.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-LOG.addHandler(handler)
+# Configuration
+BASE_URL = os.getenv("NETWORKCALC_BASE_URL", "https://networkcalc.com/api")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB = os.getenv("MONGO_DB", "networkcalc_etl")
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "15"))  # seconds
 
-def fetch_ip_general(ip: str) -> dict:
-    """Fetch general threat data for a given IPv4 from OTX API."""
-    headers = {"X-OTX-API-KEY": OTX_API_KEY}
-    url = f"{OTX_BASE}/IPv4/{ip}/general"
-    LOG.info(f"Fetching OTX general data for IP: {ip}")
+# Logging
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)-8s %(message)s",
+)
 
+logger = logging.getLogger("networkcalc_etl")
+
+# HTTP session with retry/backoff
+session = requests.Session()
+retries = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"]
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
+session.mount("http://", HTTPAdapter(max_retries=retries))
+
+
+def get_mongo_client(uri: str = MONGO_URI) -> MongoClient:
+    return MongoClient(uri, serverSelectionTimeoutMS=5000)
+
+
+def safe_get(url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Perform a GET request and return a JSON-decoded dict.
+    Raises RuntimeError on non-JSON or unsuccessful responses.
+    """
+    logger.info("GET %s", url)
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = session.get(url, params=params, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as e:
-        LOG.error(f"Network error for {ip}: {e}")
-        return None
+        logger.error("Request failed: %s", e)
+        raise RuntimeError(f"HTTP request failed: {e}") from e
+
+    if resp.status_code == 204:
+        return {}
+
+    content_type = resp.headers.get("Content-Type", "")
+    if not resp.ok:
+        # Try to capture error detail
+        text = resp.text.strip()
+        logger.error("HTTP error %s: %s", resp.status_code, text[:300])
+        raise RuntimeError(f"HTTP {resp.status_code}: {text}")
+
+    if "application/json" not in content_type:
+        # Some endpoints may return text/html; try to parse JSON anyway
+        try:
+            return resp.json()
+        except ValueError:
+            logger.error("Non-JSON response (content-type=%s).", content_type)
+            raise RuntimeError("Non-JSON response received")
 
     try:
-        data = resp.json()
-    except ValueError:
-        LOG.error(f"Non-JSON response for {ip}: {resp.text[:200]}")
-        return None
-
-    if resp.status_code != 200:
-        LOG.error(f"API error {resp.status_code} for {ip}: {data}")
-        return None
-
-    return data
+        return resp.json()
+    except ValueError as e:
+        logger.error("JSON decode error: %s", e)
+        raise RuntimeError("Failed to decode JSON response") from e
 
 
-def transform(raw: dict, ip: str) -> dict:
-    """Transform raw OTX API response into MongoDB-friendly document."""
-    if not isinstance(raw, dict):
-        LOG.error(f"Unexpected response type for {ip}: {type(raw)}")
-        return None
-
-    pulse_info = raw.get("pulse_info") or {}
-    reputation = raw.get("reputation") or {}
-
-    return {
-        "ip": ip,
-        "raw": raw, 
-        "ingested_at": datetime.utcnow(),
-        "pulse_count": pulse_info.get("count", 0),
-        "is_malicious": reputation.get("malicious", False),
+def transform_record(raw: Dict[str, Any], source: str, input_value: str) -> Dict[str, Any]:
+    """
+    Normalize record before inserting to MongoDB.
+    Adds metadata fields for auditing.
+    """
+    record = {
+        "source": source,
+        "input": input_value,
+        "fetched_at": datetime.utcnow(),
+        "raw": raw
     }
+    # Optionally normalize some fields here if desired.
+    return record
 
 
-def get_collection():
-    """Get MongoDB collection with index."""
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    client.server_info()
-    coll = client[MONGO_DB][COLL_NAME]
-    coll.create_index([("ip", 1), ("ingested_at", 1)])
-    return coll
+def load_to_mongo(collection_name: str, document: Dict[str, Any]) -> None:
+    client = get_mongo_client()
+    db = client[MONGO_DB]
+    coll = db[collection_name]
+    # Use upsert logic if you want idempotency. Here we insert a new doc for every fetch.
+    res = coll.insert_one(document)
+    logger.info("Inserted document id=%s into %s.%s", res.inserted_id, MONGO_DB, collection_name)
 
 
-def insert_documents(collection, docs):
-    """Insert documents into MongoDB."""
-    if not docs:
-        LOG.warning("No valid documents to insert.")
-        return 0
-    try:
-        result = collection.insert_many(docs, ordered=False)
-        LOG.info(f"Inserted {len(result.inserted_ids)} documents.")
-        return len(result.inserted_ids)
-    except errors.BulkWriteError as bwe:
-        inserted = bwe.details.get("nInserted", 0)
-        LOG.warning(f"Bulk write error; inserted {inserted}. Details: {bwe.details}")
-        return inserted
-    except errors.PyMongoError as e:
-        LOG.error(f"MongoDB error: {e}")
-        return 0
+# ETL job implementations for each endpoint
+def etl_ip(subnet: str) -> Dict[str, Any]:
+    endpoint = f"{BASE_URL}/ip/{subnet}"
+    raw = safe_get(endpoint)
+    doc = transform_record(raw, "ip", subnet)
+    load_to_mongo("networkcalc_ip_raw", doc)
+    return raw
 
-def run_etl(ips):
-    if not OTX_API_KEY:
-        raise EnvironmentError("OTX_API_KEY not found in environment or .env file")
 
-    coll = get_collection()
-    docs = []
+def etl_binary(number: str) -> Dict[str, Any]:
+    endpoint = f"{BASE_URL}/binary/{number}"
+    raw = safe_get(endpoint)
+    doc = transform_record(raw, "binary", number)
+    load_to_mongo("networkcalc_binary_raw", doc)
+    return raw
 
-    for ip in ips:
-        raw = fetch_ip_general(ip)
-        if not raw:
-            LOG.warning(f"Skipping {ip} due to fetch error.")
-            continue
 
-        doc = transform(raw, ip)
-        if not doc:
-            LOG.warning(f"Skipping {ip} due to transform error.")
-            continue
+def etl_certificate(hostname: str) -> Dict[str, Any]:
+    endpoint = f"{BASE_URL}/security/certificate/{hostname}"
+    raw = safe_get(endpoint)
+    doc = transform_record(raw, "certificate", hostname)
+    load_to_mongo("networkcalc_certificate_raw", doc)
+    return raw
 
-        docs.append(doc)
 
-    inserted_count = insert_documents(coll, docs)
-    LOG.info(f"ETL finished. Total inserted: {inserted_count}")
+def parse_args():
+    p = argparse.ArgumentParser(description="NetworkCalc ETL Connector")
+    p.add_argument("--mode", required=True, choices=["ip", "binary", "certificate", "all"],
+                   help="Which connector to run")
+    p.add_argument("--input", required=False, help="Input value (subnet, number, hostname). If mode=all, provide a JSON string map.")
+    return p.parse_args()
+
 
 def main():
-    parser = argparse.ArgumentParser(description="OTX IPv4 General ETL Connector")
-    parser.add_argument("--ips", required=True, help="Comma-separated IPv4 list")
-    args = parser.parse_args()
+    args = parse_args()
+    try:
+        if args.mode == "ip":
+            if not args.input:
+                raise SystemExit("mode=ip requires --input like '192.168.1.0/24'")
+            result = etl_ip(args.input)
+            print(result)
+        elif args.mode == "binary":
+            if not args.input:
+                raise SystemExit("mode=binary requires --input like '255'")
+            result = etl_binary(args.input)
+            print(result)
+        elif args.mode == "certificate":
+            if not args.input:
+                raise SystemExit("mode=certificate requires --input like 'example.com'")
+            result = etl_certificate(args.input)
+            print(result)
+        elif args.mode == "all":
+            # Expect a JSON map: {"ip":"192.168.1.0/24","binary":"255","certificate":"example.com"}
+            if not args.input:
+                raise SystemExit("mode=all requires --input JSON map")
+            job_map = json.loads(args.input)
+            outputs = {}
+            if "ip" in job_map:
+                outputs["ip"] = etl_ip(job_map["ip"])
+            if "binary" in job_map:
+                outputs["binary"] = etl_binary(job_map["binary"])
+            if "certificate" in job_map:
+                outputs["certificate"] = etl_certificate(job_map["certificate"])
+            print(json.dumps(outputs, indent=2))
+    except Exception as e:
+        logger.exception("ETL failed: %s", e)
+        sys.exit(1)
 
-    ips = [ip.strip() for ip in args.ips.split(",") if ip.strip()]
-    if not ips:
-        LOG.error("No valid IPs provided.")
-        return
-
-    run_etl(ips)
 
 if __name__ == "__main__":
+    import json
     main()
-    
